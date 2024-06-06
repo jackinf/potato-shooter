@@ -1,0 +1,15 @@
+[package]
+name = "potato-shooter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.13.2"
+bevy_ggrs = { version = "0.15", features = ["wasm-bindgen"] }
+bevy_matchbox = { version = "0.9", features = ["ggrs"] }
+dotenv = "0.15.0"
+
+[profile.dev.package."*"]
+opt-level = 2
