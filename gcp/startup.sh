@@ -38,6 +38,10 @@ wasm-bindgen target/wasm32-unknown-unknown/release/potato-shooter.wasm --out-dir
 sudo rm -rf /var/www/html
 sudo ln -s ~/potato-shooter/static /var/www/html
 
+# Set correct permissions and ownership
+sudo chown -R www-data:www-data ~/potato-shooter/static
+sudo chmod -R 755 ~/potato-shooter/static
+
 # Configure Nginx to Serve the App
 cat <<EOF | sudo tee /etc/nginx/sites-available/potato-shooter.conf
 server {

@@ -1,10 +1,10 @@
-use std::env;
+// use std::env;
 use bevy::{prelude::*, render::camera::ScalingMode};
 use bevy::utils::HashMap;
 use bevy_ggrs::{AddRollbackCommandExtension, ggrs, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs};
 use bevy_matchbox::MatchboxSocket;
 use bevy_matchbox::prelude::{PeerId, SingleChannel};
-use dotenv::dotenv;
+// use dotenv::dotenv;
 
 fn main() {
     // Load .env file
@@ -115,7 +115,7 @@ struct Player {
 fn start_matchbox_socket(mut commands: Commands) {
     // let room_url = env::var("MATCHBOX_SERVER_URL").expect("MATCHBOX_SERVER_URL not found");
     // let room_url = "ws://127.0.0.1:3536/extreme_bevy?next=2";
-    let room_url = "ws://35.204.124.47:3536/extreme_bevy?next=2";
+    let room_url = String::from("ws://35.204.124.47:3536/extreme_bevy?next=2");
     info!("connecting to matchbox server: {}", room_url);
     commands.insert_resource(MatchboxSocket::new_ggrs(&room_url));
 }
