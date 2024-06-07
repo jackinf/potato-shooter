@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# ==========================
+# DEPENDENCY INSTALLATION
+
 # Update package lists and install necessary tools
 sudo apt-get update
 sudo apt-get install -y build-essential curl
@@ -14,27 +17,58 @@ cargo install matchbox_server
 # Install Nginx (Web Server)
 sudo apt-get install -y nginx
 
-# TODO: clone your frontend app repository to ~/potato-shooter
+# Install wasm32-unknown-unknown target
+rustup target install wasm32-unknown-unknown
+
+# ==========================
+# APPLICATION SETUP
+
+# clone your frontend app repository to ~/potato-shooter
+git clone https://github.com/jackinf/potato-shooter.git ~/potato-shooter
+cd ~/potato-shooter
+
+# compile wasm and copy to static folder
+cargo build --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/potato-shooter.wasm --out-dir static --web
+
+# ==========================
+# SERVER CONFIGURATION FOR FRONTEND APP
 
 # Create a Symlink to Your Frontend App
+sudo rm -rf /var/www/html
 sudo ln -s ~/potato-shooter/static /var/www/html
 
 # Configure Nginx to Serve the App
 cat <<EOF | sudo tee /etc/nginx/sites-available/potato-shooter.conf
 server {
     listen 80;
-    server_name your-matchbox-domain.com;
     root /var/www/html;
     index index.html;
     location / {
-        try_files $uri $uri/ =404;
+        try_files \$uri \$uri/ =404;
     }
 }
 EOF
+
+# Enable the new Nginx configuration
 sudo ln -s /etc/nginx/sites-available/potato-shooter.conf /etc/nginx/sites-enabled/potato-shooter.conf
+sudo rm /etc/nginx/sites-enabled/default
 
 # Restart Nginx
 sudo systemctl restart nginx
 
-# Start Matchbox
-matchbox_server &
+# ==========================
+# MATCHBOX SERVER SETUP
+
+# Start Matchbox in the background
+nohup matchbox_server &
+
+# Wait for Matchbox to start
+sleep 5
+
+# Fetch the external IP and set the environment variable
+EXTERNAL_IP=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+MATCHBOX_SERVER_URL="ws://$EXTERNAL_IP:3536/extreme_bevy?next=2"
+
+# Add the environment variable to .bashrc
+echo "export MATCHBOX_SERVER_URL=$MATCHBOX_SERVER_URL" >> $HOME/.bashrc

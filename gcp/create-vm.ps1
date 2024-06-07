@@ -33,3 +33,4 @@ Write-Output "Frontend is running at https://$EXTERNAL_IP :80/"
 
 # to ssh into the VM
 gcloud compute ssh --project=$PROJECT_ID --zone=$ZONE $VM_NAME
+# gcloud compute ssh --project=rust-gamedev --zone=europe-west4-a potato-shooter-vm

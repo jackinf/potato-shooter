@@ -16,10 +16,12 @@ wasm-build:
 	cargo install wasm-bindgen-cli
 	cargo build --target $(WASM_TARGET) --release
 	wasm-bindgen target/$(WASM_TARGET)/release/$(IMAGE_NAME).wasm --out-dir $(WASM_DIR) --web
-	rm static/$(IMAGE_NAME).js
-	rm static/$(IMAGE_NAME).d.ts
-	cp $(WASM_DIR)/$(IMAGE_NAME).js static/$(IMAGE_NAME).js
-	cp $(WASM_DIR)/$(IMAGE_NAME).d.ts static/$(IMAGE_NAME).d.ts
+	cp static/* $(WASM_DIR)
 
 serve-web:
 	watchexec -r cargo run
+
+raw:
+	cargo build --target wasm32-unknown-unknown --release
+	wasm-bindgen target/wasm32-unknown-unknown/release/potato-shooter.wasm --out-dir out --web
+	cp out/* static/
