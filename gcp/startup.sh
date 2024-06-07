@@ -54,6 +54,33 @@ server {
 }
 EOF
 
+# TODO: brotli
+#cat <<EOF | sudo tee /etc/nginx/sites-available/potato-shooter.conf
+#server {
+#    listen 80;
+#    root /var/www/html;
+#    index index.html;
+#
+#    # Enable Brotli compression
+#    brotli on;
+#    brotli_comp_level 6;
+#    brotli_types text/plain text/css application/javascript application/json application/xml application/wasm;
+#
+#    # Serve pre-compressed .br files if available
+#    location / {
+#        try_files \$uri \$uri.br \$uri/ =404;
+#        add_header Content-Encoding br;
+#    }
+#
+#    # Serve .wasm files with Brotli compression
+#    location ~* \.wasm$ {
+#        add_header Content-Type application/wasm;
+#        add_header Content-Encoding br;
+#        try_files \$uri.br \$uri =404;
+#    }
+#}
+#EOF
+
 # Enable the new Nginx configuration
 sudo ln -s /etc/nginx/sites-available/potato-shooter.conf /etc/nginx/sites-enabled/potato-shooter.conf
 sudo rm /etc/nginx/sites-enabled/default

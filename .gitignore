@@ -5,3 +5,4 @@ static/potato-shooter.d.ts
 static/potato-shooter.js
 static/potato-shooter_bg.wasm
 static/potato-shooter_bg.wasm.d.ts
+static/output.wasm
