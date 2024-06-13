@@ -18,7 +18,7 @@ wasm-build:
 	wasm-bindgen target/$(WASM_TARGET)/release/$(IMAGE_NAME).wasm --out-dir $(WASM_DIR) --web
 	cp static/* $(WASM_DIR)
 
-serve-web:
+web:
 	watchexec -r cargo run
 
 raw:
