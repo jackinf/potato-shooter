@@ -1,21 +1,26 @@
 mod components;
 mod input;
+mod args;
+
+use std::hash::{DefaultHasher, Hash};
 use crate::components::{Bullet, BulletReady, Player};
 use bevy::utils::HashMap;
 use bevy::{prelude::*, render::camera::ScalingMode};
 use bevy_asset_loader::prelude::*;
-use bevy_ggrs::{
-    ggrs, AddRollbackCommandExtension, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs,
-    LocalPlayers, PlayerInputs, ReadInputs,
-};
+use bevy_ggrs::{ggrs, AddRollbackCommandExtension, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, Session};
 use bevy_matchbox::prelude::{PeerId, SingleChannel};
 use bevy_matchbox::MatchboxSocket;
+use clap::Parser;
 use input::*;
+use crate::args::Args;
 
 const MAP_SIZE: u32 = 41;
 const GRID_WIDTH: f32 = 0.05;
 
 fn main() {
+    let args = Args::parse();
+    eprintln!("{args:?}");
+
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -31,6 +36,7 @@ fn main() {
             }),
             GgrsPlugin::<Config>::default(), // NEW
         ))
+        .insert_resource(args)
         .init_state::<GameState>()
         .add_loading_state(
             LoadingState::new(GameState::AssetLoading)
@@ -40,14 +46,35 @@ fn main() {
         .rollback_component_with_clone::<Transform>()
         .rollback_component_with_copy::<BulletReady>()
         .rollback_component_with_copy::<MoveDir>()
+        .rollback_component_with_copy::<Player>()
+        .rollback_component_with_clone::<Sprite>()
+        .rollback_component_with_clone::<GlobalTransform>()
+        .rollback_component_with_clone::<Handle<Image>>()
+        .rollback_component_with_clone::<Visibility>()
+        .rollback_component_with_clone::<InheritedVisibility>()
+        .rollback_component_with_clone::<ViewVisibility>()
+        .rollback_component_with_copy::<Bullet>()
+        .checksum_component::<Transform>(checksum_transform)
         .insert_resource(ClearColor(Color::rgb(0.53, 0.53, 0.53)))
-        .add_systems(Startup, (setup, spawn_players, start_matchbox_socket))
+        // .add_systems(Startup, spawn_players)
         .add_systems(
             Update,
             (
-                wait_for_players.run_if(in_state(GameState::Matchmaking)),
-                camera_follow.run_if(in_state(GameState::InGame)),
+                (
+                    wait_for_players.run_if(p2p_mode),
+                    start_synctest_session.run_if(synctest_mode),
+                )
+                    .run_if(in_state(GameState::Matchmaking)),
+                (camera_follow, handle_ggrs_events).run_if(in_state(GameState::InGame)),
             ),
+        )
+        .add_systems(
+            OnEnter(GameState::Matchmaking),
+            (setup, start_matchbox_socket.run_if(p2p_mode)), // changed
+        )
+        .add_systems(
+            OnEnter(GameState::InGame),
+            spawn_players, // changed
         )
         .add_systems(ReadInputs, read_local_inputs)
         .add_systems(
@@ -175,7 +202,7 @@ fn start_matchbox_socket(mut commands: Commands) {
     commands.insert_resource(MatchboxSocket::new_ggrs(&room_url));
 }
 
-fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<SingleChannel>>, mut next_state: ResMut<NextState<GameState>>) {
+fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<SingleChannel>>, mut next_state: ResMut<NextState<GameState>>, args: Res<Args>) {
     if socket.get_channel(0).is_err() {
         return; // we've already started
     }
@@ -194,7 +221,8 @@ fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<Si
     // create a GGRS P2P session
     let mut session_builder = ggrs::SessionBuilder::<Config>::new()
         .with_num_players(num_players)
-        .with_input_delay(2);
+        .with_desync_detection_mode(DesyncDetection::On { interval: 1 })
+        .with_input_delay(args.input_delay);
 
     for (i, player) in players.into_iter().enumerate() {
         session_builder = session_builder
@@ -207,10 +235,12 @@ fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<Si
 
     // start the GGRS session
     let ggrs_session = session_builder
-        .start_p2p_session(channel)
+        .start_synctest_session()
+        // .start_p2p_session(channel)
         .expect("failed to start session");
 
-    commands.insert_resource(bevy_ggrs::Session::P2P(ggrs_session));
+    commands.insert_resource(bevy_ggrs::Session::SyncTest(ggrs_session));
+    // commands.insert_resource(bevy_ggrs::Session::P2P(ggrs_session));
 
     next_state.set(GameState::InGame);
 }
@@ -330,5 +360,85 @@ fn kill_players(
                 commands.entity(player).despawn_recursive();
             }
         }
+    }
+}
+
+fn synctest_mode(args: Res<Args>) -> bool {
+    args.synctest
+}
+
+fn p2p_mode(args: Res<Args>) -> bool {
+    !args.synctest
+}
+
+fn start_synctest_session(mut commands: Commands, mut next_state: ResMut<NextState<GameState>>) {
+    info!("Starting synctest session");
+    let num_players = 2;
+
+    let mut session_builder = ggrs::SessionBuilder::<Config>::new().with_num_players(num_players);
+
+    for i in 0..num_players {
+        session_builder = session_builder
+            .add_player(ggrs::PlayerType::Local, i)
+            .expect("failed to add player");
+    }
+
+    let ggrs_session = session_builder
+        .start_synctest_session()
+        .expect("failed to start session");
+
+    commands.insert_resource(bevy_ggrs::Session::SyncTest(ggrs_session));
+    next_state.set(GameState::InGame);
+}
+
+use bevy_ggrs::checksum_hasher;
+use std::hash::Hasher;
+use bevy_ggrs::ggrs::DesyncDetection;
+use bevy_ggrs::prelude::GgrsEvent;
+
+pub fn checksum_transform(transform: &Transform) -> u64 {
+    let mut hasher = checksum_hasher();
+    // let mut hasher = DefaultHasher::new();
+
+    assert!(
+        transform.is_finite(),
+        "Hashing is not stable for NaN f32 values."
+    );
+
+    transform.translation.x.to_bits().hash(&mut hasher);
+    transform.translation.y.to_bits().hash(&mut hasher);
+    transform.translation.z.to_bits().hash(&mut hasher);
+
+    transform.rotation.x.to_bits().hash(&mut hasher);
+    transform.rotation.y.to_bits().hash(&mut hasher);
+    transform.rotation.z.to_bits().hash(&mut hasher);
+    transform.rotation.w.to_bits().hash(&mut hasher);
+
+    // skip transform.scale as it's not used for gameplay
+
+    hasher.finish()
+}
+
+fn handle_ggrs_events(mut session: ResMut<Session<Config>>) {
+    match session.as_mut() {
+        Session::P2P(s) => {
+            for event in s.events() {
+                match event {
+                    GgrsEvent::Disconnected { .. } | GgrsEvent::NetworkInterrupted { .. } => {
+                        warn!("GGRS event: {event:?}")
+                    }
+                    GgrsEvent::DesyncDetected {
+                        local_checksum,
+                        remote_checksum,
+                        frame,
+                        ..
+                    } => {
+                        error!("Desync on frame {frame}. Local checksum: {local_checksum:X}, remote checksum: {remote_checksum:X}");
+                    }
+                    _ => info!("GGRS event: {event:?}"),
+                }
+            }
+        }
+        _ => {}
     }
 }

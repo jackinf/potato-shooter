@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub struct Player {
     pub handle: usize,
 }
@@ -8,5 +8,5 @@ pub struct Player {
 #[derive(Component, Clone, Copy)]
 pub struct BulletReady(pub bool);
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub struct Bullet;

@@ -5,6 +5,7 @@ BUCKET_NAME=gs://potato-shooter-wasm/
 IMAGE_NAME=potato-shooter
 IMAGE_URI=gcr.io/$(PROJECT_ID)/$(IMAGE_NAME)
 WASM_TARGET=wasm32-unknown-unknown
+NATIVE_TARGET=x86_64-pc-windows-msvc
 WASM_DIR=out
 
 # Phony targets
@@ -19,7 +20,10 @@ wasm-build:
 	cp static/* $(WASM_DIR)
 
 web:
-	watchexec -r cargo run
+	watchexec -r cargo run --target $(WASM_TARGET)
+
+native:
+	watchexec -r cargo run --target $(NATIVE_TARGET)
 
 raw:
 	cargo build --target wasm32-unknown-unknown --release

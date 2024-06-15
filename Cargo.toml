@@ -11,6 +11,7 @@ bevy_ggrs = { version = "0.15", features = ["wasm-bindgen"] }
 bevy_matchbox = { version = "0.9", features = ["ggrs"] }
 dotenv = "0.15.0"
 bevy_asset_loader = "0.20.2"
+clap = { version = "4.4", features = ["derive"] }
 
 [profile.dev.package."*"]
 opt-level = 2
