@@ -56,6 +56,3 @@ pub fn direction(input: u8) -> Vec2 {
     }
     direction.normalize_or_zero()
 }
-
-#[derive(Component, Clone, Copy)]
-pub struct MoveDir(pub Vec2);

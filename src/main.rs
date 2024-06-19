@@ -1,18 +1,22 @@
+mod args;
 mod components;
 mod input;
-mod args;
 
-use std::hash::{DefaultHasher, Hash};
-use crate::components::{Bullet, BulletReady, Player};
+use crate::args::Args;
+use crate::components::{Bullet, BulletReady, MoveDir, Player, Scores};
 use bevy::utils::HashMap;
 use bevy::{prelude::*, render::camera::ScalingMode};
 use bevy_asset_loader::prelude::*;
-use bevy_ggrs::{ggrs, AddRollbackCommandExtension, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, Session};
+use bevy_ggrs::{
+    ggrs, AddRollbackCommandExtension, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs,
+    LocalPlayers, PlayerInputs, ReadInputs, Session,
+};
 use bevy_matchbox::prelude::{PeerId, SingleChannel};
 use bevy_matchbox::MatchboxSocket;
+use bevy_roll_safe::prelude::*;
 use clap::Parser;
 use input::*;
-use crate::args::Args;
+use std::hash::{DefaultHasher, Hash};
 
 const MAP_SIZE: u32 = 41;
 const GRID_WIDTH: f32 = 0.05;
@@ -35,6 +39,7 @@ fn main() {
                 ..default()
             }),
             GgrsPlugin::<Config>::default(), // NEW
+            EguiPlugin
         ))
         .insert_resource(args)
         .init_state::<GameState>()
@@ -49,11 +54,13 @@ fn main() {
         .rollback_component_with_copy::<Player>()
         .rollback_component_with_clone::<Sprite>()
         .rollback_component_with_clone::<GlobalTransform>()
+        .rollback_resource_with_clone::<RoundEndTimer>()
         .rollback_component_with_clone::<Handle<Image>>()
         .rollback_component_with_clone::<Visibility>()
         .rollback_component_with_clone::<InheritedVisibility>()
         .rollback_component_with_clone::<ViewVisibility>()
         .rollback_component_with_copy::<Bullet>()
+        .rollback_resource_with_copy::<Scores>()
         .checksum_component::<Transform>(checksum_transform)
         .insert_resource(ClearColor(Color::rgb(0.53, 0.53, 0.53)))
         // .add_systems(Startup, spawn_players)
@@ -65,16 +72,17 @@ fn main() {
                     start_synctest_session.run_if(synctest_mode),
                 )
                     .run_if(in_state(GameState::Matchmaking)),
-                (camera_follow, handle_ggrs_events).run_if(in_state(GameState::InGame)),
+                (camera_follow, update_score_ui, handle_ggrs_events)
+                    .run_if(in_state(GameState::InGame)), 
             ),
         )
         .add_systems(
             OnEnter(GameState::Matchmaking),
-            (setup, start_matchbox_socket.run_if(p2p_mode)), // changed
+            (setup, start_matchbox_socket.run_if(p2p_mode)), 
         )
         .add_systems(
             OnEnter(GameState::InGame),
-            spawn_players, // changed
+            spawn_players, 
         )
         .add_systems(ReadInputs, read_local_inputs)
         .add_systems(
@@ -86,7 +94,20 @@ fn main() {
                 move_bullet.after(fire_bullets),
                 kill_players.after(move_bullet).after(move_players),
             )
+                .after(apply_state_transition::<RollbackState>)
+                .run_if(in_state(RollbackState::InRound)),
         )
+        .init_ggrs_state::<RollbackState>()
+        .init_resource::<RoundEndTimer>()
+        .init_resource::<Scores>()
+        .add_systems(
+            GgrsSchedule,
+            round_end_timeout
+                .ambiguous_with(kill_players)
+                .run_if(in_state(RollbackState::RoundEnd))
+                .after(apply_state_transition::<RollbackState>),
+        )
+        .add_systems(OnEnter(RollbackState::InRound), spawn_players)
         .run();
 }
 
@@ -130,7 +151,21 @@ fn setup(mut commands: Commands) {
     }
 }
 
-fn spawn_players(mut commands: Commands) {
+fn spawn_players(
+    mut commands: Commands,
+    players: Query<Entity, With<Player>>,
+    bullets: Query<Entity, With<Bullet>>,
+) {
+    info!("Spawning players");
+
+    for player in &players {
+        commands.entity(player).despawn_recursive();
+    }
+
+    for bullet in &bullets {
+        commands.entity(bullet).despawn_recursive();
+    }
+
     // Player 1
     commands
         .spawn((
@@ -202,7 +237,12 @@ fn start_matchbox_socket(mut commands: Commands) {
     commands.insert_resource(MatchboxSocket::new_ggrs(&room_url));
 }
 
-fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<SingleChannel>>, mut next_state: ResMut<NextState<GameState>>, args: Res<Args>) {
+fn wait_for_players(
+    mut commands: Commands,
+    mut socket: ResMut<MatchboxSocket<SingleChannel>>,
+    mut next_state: ResMut<NextState<GameState>>,
+    args: Res<Args>,
+) {
     if socket.get_channel(0).is_err() {
         return; // we've already started
     }
@@ -235,12 +275,12 @@ fn wait_for_players(mut commands: Commands, mut socket: ResMut<MatchboxSocket<Si
 
     // start the GGRS session
     let ggrs_session = session_builder
-        .start_synctest_session()
-        // .start_p2p_session(channel)
+        // .start_synctest_session()
+        .start_p2p_session(channel)
         .expect("failed to start session");
 
-    commands.insert_resource(bevy_ggrs::Session::SyncTest(ggrs_session));
-    // commands.insert_resource(bevy_ggrs::Session::P2P(ggrs_session));
+    // commands.insert_resource(bevy_ggrs::Session::SyncTest(ggrs_session));
+    commands.insert_resource(bevy_ggrs::Session::P2P(ggrs_session));
 
     next_state.set(GameState::InGame);
 }
@@ -347,17 +387,28 @@ const BULLET_RADIUS: f32 = 0.025;
 
 fn kill_players(
     mut commands: Commands,
-    players: Query<(Entity, &Transform), (With<Player>, Without<Bullet>)>,
+    players: Query<(Entity, &Transform, &Player), Without<Bullet>>, 
     bullets: Query<&Transform, With<Bullet>>,
+    mut next_state: ResMut<NextState<RollbackState>>,
+    mut scores: ResMut<Scores>, // new
 ) {
-    for (player, player_transform) in &players {
+    for (player_entity, player_transform, player) in &players { 
         for bullet_transform in &bullets {
             let distance = Vec2::distance(
                 player_transform.translation.xy(),
                 bullet_transform.translation.xy(),
             );
             if distance < PLAYER_RADIUS + BULLET_RADIUS {
-                commands.entity(player).despawn_recursive();
+                commands.entity(player_entity).despawn_recursive(); 
+                next_state.set(RollbackState::RoundEnd);
+
+                // new
+                if player.handle == 0 {
+                    scores.1 += 1;
+                } else {
+                    scores.0 += 1;
+                }
+                info!("player died: {scores:?}")
             }
         }
     }
@@ -392,9 +443,11 @@ fn start_synctest_session(mut commands: Commands, mut next_state: ResMut<NextSta
 }
 
 use bevy_ggrs::checksum_hasher;
-use std::hash::Hasher;
 use bevy_ggrs::ggrs::DesyncDetection;
 use bevy_ggrs::prelude::GgrsEvent;
+use std::hash::Hasher;
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use bevy_egui::egui::{Align2, Color32, FontId, Id, RichText};
 
 pub fn checksum_transform(transform: &Transform) -> u64 {
     let mut hasher = checksum_hasher();
@@ -441,4 +494,48 @@ fn handle_ggrs_events(mut session: ResMut<Session<Config>>) {
         }
         _ => {}
     }
+}
+
+#[derive(States, Clone, Eq, PartialEq, Debug, Hash, Default, Reflect)]
+enum RollbackState {
+    /// When the characters running and gunning
+    #[default]
+    InRound,
+    /// When one character is dead, and we're transitioning to the next round
+    RoundEnd,
+}
+
+#[derive(Resource, Clone, Deref, DerefMut)]
+struct RoundEndTimer(Timer);
+
+impl Default for RoundEndTimer {
+    fn default() -> Self {
+        RoundEndTimer(Timer::from_seconds(1.0, TimerMode::Repeating))
+    }
+}
+
+fn round_end_timeout(
+    mut timer: ResMut<RoundEndTimer>,
+    mut state: ResMut<NextState<RollbackState>>,
+    time: Res<Time>,
+) {
+    timer.tick(time.delta());
+
+    if timer.just_finished() {
+        state.set(RollbackState::InRound);
+    }
+}
+
+fn update_score_ui(mut contexts: EguiContexts, scores: Res<Scores>) {
+    let Scores(p1_score, p2_score) = *scores;
+
+    egui::Area::new(Id::new("score"))
+        .anchor(Align2::CENTER_TOP, (0., 25.))
+        .show(contexts.ctx_mut(), |ui| {
+            ui.label(
+                RichText::new(format!("{p1_score} - {p2_score}"))
+                    .color(Color32::BLACK)
+                    .font(FontId::proportional(72.0)),
+            );
+        });
 }

@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Resource, Debug, Clone)] // changed
 pub struct Args {
     /// runs the game in synctest mode
-    #[clap(long)]
+    #[clap(long, default_value = "false")]
     pub synctest: bool,
 
     /// sets a custom input delay
