@@ -32,3 +32,4 @@ wasm-build-raw:
 	cargo build --target wasm32-unknown-unknown --release
 	wasm-bindgen target/wasm32-unknown-unknown/release/potato-shooter.wasm --out-dir out --web
 	cp out/* static/
+	cp out/* /var/www/potato-shooter/
