@@ -16,3 +16,6 @@ pub struct Bullet;
 
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct Scores(pub u32, pub u32);
+
+#[derive(Component, Clone, Copy)]
+pub struct Wall;

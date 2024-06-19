@@ -3,7 +3,7 @@ mod components;
 mod input;
 
 use crate::args::Args;
-use crate::components::{Bullet, BulletReady, MoveDir, Player, Scores};
+use crate::components::{Bullet, BulletReady, MoveDir, Player, Scores, Wall};
 use bevy::utils::HashMap;
 use bevy::{prelude::*, render::camera::ScalingMode};
 use bevy_asset_loader::prelude::*;
@@ -89,10 +89,12 @@ fn main() {
             GgrsSchedule,
             (
                 move_players,
+                resolve_wall_collisions.after(move_players),
                 reload_bullet,
-                fire_bullets.after(move_players).after(reload_bullet),
+                fire_bullets.after(move_players).after(reload_bullet).after(resolve_wall_collisions),
                 move_bullet.after(fire_bullets),
                 kill_players.after(move_bullet).after(move_players),
+                bullet_wall_collisions.after(move_bullet),
             )
                 .after(apply_state_transition::<RollbackState>)
                 .run_if(in_state(RollbackState::InRound)),
@@ -107,7 +109,11 @@ fn main() {
                 .run_if(in_state(RollbackState::RoundEnd))
                 .after(apply_state_transition::<RollbackState>),
         )
-        .add_systems(OnEnter(RollbackState::InRound), spawn_players)
+        .add_systems(
+            OnEnter(RollbackState::InRound),
+            (generate_map, spawn_players.after(generate_map)), // <-- add a new system
+        )
+        .init_resource::<SessionSeed>()
         .run();
 }
 
@@ -155,6 +161,8 @@ fn spawn_players(
     mut commands: Commands,
     players: Query<Entity, With<Player>>,
     bullets: Query<Entity, With<Bullet>>,
+    scores: Res<Scores>,
+    session_seed: Res<SessionSeed>
 ) {
     info!("Spawning players");
 
@@ -166,6 +174,11 @@ fn spawn_players(
         commands.entity(bullet).despawn_recursive();
     }
 
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64((scores.0 + scores.1) as u64 ^ **session_seed);
+    let half = MAP_SIZE as f32 / 2.;
+    let p1_pos = Vec2::new(rng.gen_range(-half..half), rng.gen_range(-half..half));
+    let p2_pos = Vec2::new(rng.gen_range(-half..half), rng.gen_range(-half..half));
+
     // Player 1
     commands
         .spawn((
@@ -173,7 +186,7 @@ fn spawn_players(
             BulletReady(true),
             MoveDir(-Vec2::X),
             SpriteBundle {
-                transform: Transform::from_translation(Vec3::new(-2., 0., 100.)), // new
+                transform: Transform::from_translation(p1_pos.extend(100.)), // new
                 sprite: Sprite {
                     color: Color::rgb(0., 0.47, 1.),
                     custom_size: Some(Vec2::new(1., 1.)),
@@ -191,7 +204,7 @@ fn spawn_players(
             BulletReady(true),
             MoveDir(Vec2::X),
             SpriteBundle {
-                transform: Transform::from_translation(Vec3::new(2., 0., 100.)), // new
+                transform: Transform::from_translation(p2_pos.extend(100.)), // new
                 sprite: Sprite {
                     color: Color::rgb(0., 0.4, 0.),
                     custom_size: Some(Vec2::new(1., 1.)),
@@ -257,6 +270,15 @@ fn wait_for_players(
     }
 
     info!("All peers have joined, going in-game");
+
+    // determine the seed
+    let id = socket.id().expect("no peer id assigned").0.as_u64_pair();
+    let mut seed = id.0 ^ id.1;
+    for peer in socket.connected_peers() {
+        let peer_id = peer.0.as_u64_pair();
+        seed ^= peer_id.0 ^ peer_id.1;
+    }
+    commands.insert_resource(SessionSeed(seed));
 
     // create a GGRS P2P session
     let mut session_builder = ggrs::SessionBuilder::<Config>::new()
@@ -439,6 +461,7 @@ fn start_synctest_session(mut commands: Commands, mut next_state: ResMut<NextSta
         .expect("failed to start session");
 
     commands.insert_resource(bevy_ggrs::Session::SyncTest(ggrs_session));
+    commands.insert_resource(SessionSeed(thread_rng().next_u64())); // <-- new
     next_state.set(GameState::InGame);
 }
 
@@ -448,6 +471,8 @@ use bevy_ggrs::prelude::GgrsEvent;
 use std::hash::Hasher;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use bevy_egui::egui::{Align2, Color32, FontId, Id, RichText};
+use rand::{Rng, RngCore, SeedableRng, thread_rng};
+use rand_xoshiro::Xoshiro256PlusPlus;
 
 pub fn checksum_transform(transform: &Transform) -> u64 {
     let mut hasher = checksum_hasher();
@@ -538,4 +563,115 @@ fn update_score_ui(mut contexts: EguiContexts, scores: Res<Scores>) {
                     .font(FontId::proportional(72.0)),
             );
         });
+}
+
+#[derive(Resource, Default, Clone, Copy, Debug, Deref, DerefMut)]
+struct SessionSeed(u64);
+
+fn generate_map(
+    mut commands: Commands,
+    walls: Query<Entity, With<Wall>>,
+    scores: Res<Scores>,
+    session_seed: Res<SessionSeed>,
+) {
+    // despawn walls from previous round (if any)
+    for wall in &walls {
+        commands.entity(wall).despawn_recursive();
+    }
+
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64((scores.0 + scores.1) as u64 ^ **session_seed);
+
+    for _ in 0..20 {
+        let max_box_size = MAP_SIZE / 4;
+        let width = rng.gen_range(1..max_box_size);
+        let height = rng.gen_range(1..max_box_size);
+
+        let cell_x = rng.gen_range(0..=(MAP_SIZE - width));
+        let cell_y = rng.gen_range(0..=(MAP_SIZE - height));
+
+        let size = Vec2::new(width as f32, height as f32);
+
+        commands.spawn((
+            Wall,
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::rgb(0.27, 0.27, 0.27),
+                    custom_size: Some(size),
+                    ..default()
+                },
+                transform: Transform::from_translation(Vec3::new(
+                    cell_x as f32 + size.x / 2. - MAP_SIZE as f32 / 2.,
+                    cell_y as f32 + size.y / 2. - MAP_SIZE as f32 / 2.,
+                    10.,
+                )),
+                ..default()
+            },
+        ));
+    }
+}
+
+fn resolve_wall_collisions(
+    mut players: Query<&mut Transform, With<Player>>,
+    walls: Query<(&Transform, &Sprite), (With<Wall>, Without<Player>)>,
+) {
+    for mut player_transform in &mut players {
+        for (wall_transform, wall_sprite) in &walls {
+            let wall_size = wall_sprite.custom_size.expect("wall doesn't have a size");
+            let wall_pos = wall_transform.translation.xy();
+            let player_pos = player_transform.translation.xy();
+
+            let wall_to_player = player_pos - wall_pos;
+            // exploit the symmetry of the problem,
+            // treat things as if they are in the first quadrant
+            let wall_to_player_abs = wall_to_player.abs();
+            let wall_corner_to_player_center = wall_to_player_abs - wall_size / 2.;
+
+            let corner_to_corner = wall_corner_to_player_center - Vec2::splat(PLAYER_RADIUS);
+
+            if corner_to_corner.x > 0. || corner_to_corner.y > 0. {
+                // no collision
+                continue;
+            }
+
+            if corner_to_corner.x > corner_to_corner.y {
+                // least overlap on x axis
+                player_transform.translation.x -= wall_to_player.x.signum() * corner_to_corner.x;
+            } else {
+                // least overlap on y axis
+                player_transform.translation.y -= wall_to_player.y.signum() * corner_to_corner.y;
+            }
+        }
+    }
+}
+
+fn bullet_wall_collisions(
+    mut commands: Commands,
+    bullets: Query<(Entity, &Transform), With<Bullet>>,
+    walls: Query<(&Transform, &Sprite), (With<Wall>, Without<Bullet>)>,
+) {
+    let map_limit = MAP_SIZE as f32 / 2.;
+
+    for (bullet_entity, bullet_transform) in &bullets {
+        let bullet_pos = bullet_transform.translation.xy();
+
+        // despawn bullets outside the map
+        if bullet_pos.x.abs() > map_limit || bullet_pos.y.abs() > map_limit {
+            commands.entity(bullet_entity).despawn_recursive();
+            continue;
+        }
+
+        for (wall_transform, wall_sprite) in &walls {
+            let wall_size = wall_sprite.custom_size.expect("wall doesn't have a size");
+            let wall_pos = wall_transform.translation.xy();
+            let center_to_center = wall_pos - bullet_pos;
+            // exploit symmetry
+            let center_to_center = center_to_center.abs();
+            let corner_to_center = center_to_center - wall_size / 2.;
+            if corner_to_center.x < 0. && corner_to_center.y < 0. {
+                // we're inside a wall
+                commands.entity(bullet_entity).despawn_recursive();
+                break;
+            }
+        }
+    }
 }
