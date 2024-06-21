@@ -6,3 +6,6 @@ static/potato-shooter.js
 static/potato-shooter_bg.wasm
 static/potato-shooter_bg.wasm.d.ts
 static/output.wasm
+
+release_package
+bevy-game-release.zip
